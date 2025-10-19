@@ -29,3 +29,7 @@ go build ./cmd/mongodb-exporter
 ```
 
 Scrape metrics from `http://<host>:9216/metrics` (or the address configured via `LISTEN_ADDR`). Integrate the endpoint into Prometheus to persist and alert on the metrics above.
+
+## CI/CD
+
+A GitHub Actions workflow at `.github/workflows/docker-image.yml` builds the container image from `build/Dockerfile` and publishes it to GitHub Container Registry (`ghcr.io/<owner>/<repo>`). Pushes to `main` get a `latest` tag and commits/tags receive SHA- or release-based tags. Configure your Kubernetes deployment to pull one of those published tags, or fork the workflow to target a different registry if required.
