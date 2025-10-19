@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:8
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: example
+
+  # exporter:
+  #   image: mongodb-up-exporter:latest
+  #   depends_on:
+  #     - mongodb
+  #   ports:
+  #     - "9216:9216"
+  #   environment:
+  #     MONGODB_URI: mongodb://root:example@mongodb:27017/admin
+  #     CHECK_INTERVAL: 5s
+  #     LISTEN_ADDR: :9216
