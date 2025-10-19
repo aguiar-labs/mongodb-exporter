@@ -44,17 +44,17 @@ func New(cfg config.Config) *Exporter {
 			prometheus.GaugeOpts{
 				Namespace: "mongodb",
 				Name:      "slow_queries",
-				Help:      "Number of operations with duration >= slow_ms since the last interval (per db/collection).",
+				Help:      "Number of slow operations (≥ slow_ms) per db/collection/command since last interval.",
 			},
-			[]string{"db", "collection"},
+			[]string{"db", "collection", "command"},
 		),
 		mongoSlowTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: "mongodb",
 				Name:      "slow_queries_total",
-				Help:      "Cumulative number of operations with duration >= slow_ms (per db/collection).",
+				Help:      "Cumulative slow operations (≥ slow_ms) per db/collection/command.",
 			},
-			[]string{"db", "collection"},
+			[]string{"db", "collection", "command"},
 		),
 		indexAccess: prometheus.NewCounterVec(
 			prometheus.CounterOpts{

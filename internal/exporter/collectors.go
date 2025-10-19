@@ -216,7 +216,26 @@ func (e *Exporter) collectSlowMetrics(client *mongo.Client) {
 
 		pipeline := mongo.Pipeline{
 			bson.D{{Key: "$match", Value: match}},
-			bson.D{{Key: "$group", Value: bson.D{{Key: "_id", Value: "$ns"}, {Key: "count", Value: bson.D{{Key: "$sum", Value: 1}}}}}},
+			bson.D{{Key: "$project", Value: bson.D{
+				{"ns", 1},
+				{"op", 1},
+				{"commandName", bson.D{
+					{"$first", bson.D{
+						{"$map", bson.D{
+							{"input", bson.D{{"$objectToArray", "$command"}}},
+							{"as", "kv"},
+							{"in", "$$kv.k"},
+						}},
+					}},
+				}},
+			}}},
+			bson.D{{Key: "$group", Value: bson.D{
+				{"_id", bson.D{
+					{"ns", "$ns"},
+					{"command", "$commandName"},
+				}},
+				{"count", bson.D{{"$sum", 1}}},
+			}}},
 			bson.D{{Key: "$sort", Value: bson.D{{Key: "count", Value: -1}}}},
 		}
 
@@ -227,22 +246,31 @@ func (e *Exporter) collectSlowMetrics(client *mongo.Client) {
 		}
 
 		var results []struct {
-			NS    string `bson:"_id"`
-			Count int64  `bson:"count"`
+			ID struct {
+				NS      string `bson:"ns"`
+				Command string `bson:"command"`
+			} `bson:"_id"`
+			Count int64 `bson:"count"`
 		}
+
 		if err := cur.All(ctx, &results); err != nil {
 			log.Printf("slow-collector: read cursor on %s: %v", dbname, err)
 			continue
 		}
 
 		for _, r := range results {
-			db, coll := splitNamespace(r.NS)
+			db, coll := splitNamespace(r.ID.NS)
 			if db == "" {
 				db = dbname
 			}
-			e.mongoSlowGauge.WithLabelValues(db, coll).Set(float64(r.Count))
+			cmd := r.ID.Command
+			if cmd == "" {
+				cmd = "unknown"
+			}
+
+			e.mongoSlowGauge.WithLabelValues(db, coll, cmd).Set(float64(r.Count))
 			if r.Count > 0 {
-				e.mongoSlowTotal.WithLabelValues(db, coll).Add(float64(r.Count))
+				e.mongoSlowTotal.WithLabelValues(db, coll, cmd).Add(float64(r.Count))
 			}
 		}
 
