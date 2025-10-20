@@ -219,24 +219,44 @@ func (e *Exporter) collectSlowMetrics(client *mongo.Client) {
 			bson.D{{Key: "$project", Value: bson.D{
 				{"ns", 1},
 				{"op", 1},
+				{"millis", 1},
+				{"ts", 1},
+				{"appName", 1},
+				{"client", 1},
+				{"user", 1},
+				{"planSummary", 1},
 				{"commandName", bson.D{
 					{"$first", bson.D{
 						{"$map", bson.D{
-							{"input", bson.D{{"$objectToArray", "$command"}}},
+							{"input", bson.D{{"$objectToArray", bson.D{{"$ifNull", bson.A{"$command", bson.D{}}}}}}},
 							{"as", "kv"},
 							{"in", "$$kv.k"},
 						}},
 					}},
 				}},
+				{"command", bson.D{
+					{"$function", bson.D{
+						{"body", "function(cmd) { try { return JSON.stringify(cmd).slice(0, 500); } catch (e) { return ''; } }"},
+						{"args", bson.A{"$command"}},
+						{"lang", "js"},
+					}},
+				}},
 			}}},
 			bson.D{{Key: "$group", Value: bson.D{
 				{"_id", bson.D{
-					{"ns", "$ns"},
-					{"command", "$commandName"},
+					{"db", bson.D{{"$arrayElemAt", bson.A{bson.D{{"$split", bson.A{"$ns", "."}}}, 0}}}},
+					{"collection", bson.D{{"$arrayElemAt", bson.A{bson.D{{"$split", bson.A{"$ns", "."}}}, 1}}}},
+					{"commandName", "$commandName"},
+					{"op", "$op"},
+					{"planSummary", "$planSummary"},
+					{"appName", "$appName"},
 				}},
 				{"count", bson.D{{"$sum", 1}}},
+				{"avgMillis", bson.D{{"$avg", "$millis"}}},
+				{"maxMillis", bson.D{{"$max", "$millis"}}},
 			}}},
 			bson.D{{Key: "$sort", Value: bson.D{{Key: "count", Value: -1}}}},
+			bson.D{{Key: "$limit", Value: 100}},
 		}
 
 		cur, err := profile.Aggregate(ctx, pipeline)
@@ -247,10 +267,16 @@ func (e *Exporter) collectSlowMetrics(client *mongo.Client) {
 
 		var results []struct {
 			ID struct {
-				NS      string `bson:"ns"`
-				Command string `bson:"command"`
+				DB          string `bson:"db"`
+				Collection  string `bson:"collection"`
+				CommandName string `bson:"commandName"`
+				Op          string `bson:"op"`
+				PlanSummary string `bson:"planSummary"`
+				AppName     string `bson:"appName"`
 			} `bson:"_id"`
-			Count int64 `bson:"count"`
+			Count     int64   `bson:"count"`
+			AvgMillis float64 `bson:"avgMillis"`
+			MaxMillis int64   `bson:"maxMillis"`
 		}
 
 		if err := cur.All(ctx, &results); err != nil {
@@ -259,19 +285,23 @@ func (e *Exporter) collectSlowMetrics(client *mongo.Client) {
 		}
 
 		for _, r := range results {
-			db, coll := splitNamespace(r.ID.NS)
-			if db == "" {
-				db = dbname
-			}
-			cmd := r.ID.Command
-			if cmd == "" {
-				cmd = "unknown"
-			}
+			e.mongoSlowGauge.WithLabelValues(
+				r.ID.DB,
+				r.ID.Collection,
+				r.ID.CommandName,
+				r.ID.Op,
+				r.ID.PlanSummary,
+				r.ID.AppName,
+			).Set(float64(r.Count))
 
-			e.mongoSlowGauge.WithLabelValues(db, coll, cmd).Set(float64(r.Count))
-			if r.Count > 0 {
-				e.mongoSlowTotal.WithLabelValues(db, coll, cmd).Add(float64(r.Count))
-			}
+			e.mongoSlowTotal.WithLabelValues(
+				r.ID.DB,
+				r.ID.Collection,
+				r.ID.CommandName,
+				r.ID.Op,
+				r.ID.PlanSummary,
+				r.ID.AppName,
+			).Add(float64(r.Count))
 		}
 
 		e.lastSeenTs[dbname] = time.Now()

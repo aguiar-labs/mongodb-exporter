@@ -46,7 +46,7 @@ func New(cfg config.Config) *Exporter {
 				Name:      "slow_queries",
 				Help:      "Number of slow operations (≥ slow_ms) per db/collection/command since last interval.",
 			},
-			[]string{"db", "collection", "command"},
+			[]string{"db", "collection", "command", "app", "plan", "comment"},
 		),
 		mongoSlowTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -54,7 +54,7 @@ func New(cfg config.Config) *Exporter {
 				Name:      "slow_queries_total",
 				Help:      "Cumulative slow operations (≥ slow_ms) per db/collection/command.",
 			},
-			[]string{"db", "collection", "command"},
+			[]string{"db", "collection", "command", "app", "plan", "comment"},
 		),
 		indexAccess: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
