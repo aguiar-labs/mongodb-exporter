@@ -216,8 +216,50 @@ func (e *Exporter) collectSlowMetrics(client *mongo.Client) {
 
 		pipeline := mongo.Pipeline{
 			bson.D{{Key: "$match", Value: match}},
-			bson.D{{Key: "$group", Value: bson.D{{Key: "_id", Value: "$ns"}, {Key: "count", Value: bson.D{{Key: "$sum", Value: 1}}}}}},
+			bson.D{{Key: "$project", Value: bson.D{
+				{"ns", 1},
+				{"op", 1},
+				{"millis", 1},
+				{"ts", 1},
+				{"appName", 1},
+				{"client", 1},
+				{"user", 1},
+				{"planSummary", 1},
+				{"docsExamined", 1},
+				{"keysExamined", 1},
+				{"commandName", bson.D{
+					{"$first", bson.D{
+						{"$map", bson.D{
+							{"input", bson.D{{"$objectToArray", bson.D{{"$ifNull", bson.A{"$command", bson.D{}}}}}}},
+							{"as", "kv"},
+							{"in", "$$kv.k"},
+						}},
+					}},
+				}},
+				{"command", bson.D{
+					{"$function", bson.D{
+						{"body", "function(cmd) { try { if (!cmd || typeof cmd !== 'object') return ''; function sanitizeValue(v){ if (v === null || v === undefined) return '?'; var t = typeof v; if (t === 'string' || t === 'number' || t === 'boolean') return '?'; if (Array.isArray(v)) return v.map(sanitizeValue); if (t === 'object') { var ks = Object.keys(v); if (ks.length === 1 && (ks[0] === '$oid' || ks[0] === '$date' || ks[0] === '$numberLong' || ks[0] === '$binary' || ks[0] === '$uuid')) return '?'; var o = {}; for (var k in v) { o[k] = sanitizeValue(v[k]); } return o; } return '?'; } function sanitizeFilter(f){ if (!f || typeof f !== 'object') return {}; var out = {}; for (var k in f) { out[k] = sanitizeValue(f[k]); } return out; } var c = {}; for (var k in cmd) { c[k] = cmd[k]; } delete c.lsid; delete c.$clusterTime; delete c.$db; delete c.$readPreference; delete c.$client; delete c.txnNumber; delete c.comment; delete c.allowDiskUse; var out = c; if (c.find) { out = { find: c.find, filter: sanitizeFilter(c.filter || {}) }; } else if (c.aggregate) { var matches = []; (c.pipeline || []).forEach(function(stage){ if (stage.$match) matches.push(sanitizeFilter(stage.$match)); }); out = { aggregate: c.aggregate, match: matches }; } else if (c.update) { out = { update: c.update, updates: (c.updates || []).map(function(u){ return { q: sanitizeFilter(u.q || {}), u: '?' }; }) }; } else if (c.delete) { out = { delete: c.delete, deletes: (c.deletes || []).map(function(d){ return { q: sanitizeFilter(d.q || {}) }; }) }; } return JSON.stringify(out).slice(0, 500); } catch (e) { return ''; } }"},
+						{"args", bson.A{"$command"}},
+						{"lang", "js"},
+					}},
+				}},
+			}}},
+			bson.D{{Key: "$group", Value: bson.D{
+				{"_id", bson.D{
+					{"db", bson.D{{"$arrayElemAt", bson.A{bson.D{{"$split", bson.A{"$ns", "."}}}, 0}}}},
+					{"collection", bson.D{{"$arrayElemAt", bson.A{bson.D{{"$split", bson.A{"$ns", "."}}}, 1}}}},
+					{"commandName", "$commandName"},
+					{"op", "$op"},
+					{"planSummary", "$planSummary"},
+					{"appName", "$appName"},
+					{"command", "$command"},
+				}},
+				{"count", bson.D{{"$sum", 1}}},
+				{"avgMillis", bson.D{{"$avg", "$millis"}}},
+				{"maxMillis", bson.D{{"$max", "$millis"}}},
+			}}},
 			bson.D{{Key: "$sort", Value: bson.D{{Key: "count", Value: -1}}}},
+			bson.D{{Key: "$limit", Value: 100}},
 		}
 
 		cur, err := profile.Aggregate(ctx, pipeline)
@@ -227,23 +269,70 @@ func (e *Exporter) collectSlowMetrics(client *mongo.Client) {
 		}
 
 		var results []struct {
-			NS    string `bson:"_id"`
-			Count int64  `bson:"count"`
+			ID struct {
+				DB          string `bson:"db"`
+				Collection  string `bson:"collection"`
+				CommandName string `bson:"commandName"`
+				Op          string `bson:"op"`
+				PlanSummary string `bson:"planSummary"`
+				AppName     string `bson:"appName"`
+				Command     string `bson:"command"`
+			} `bson:"_id"`
+			Count     int64   `bson:"count"`
+			AvgMillis float64 `bson:"avgMillis"`
+			MaxMillis int64   `bson:"maxMillis"`
 		}
+
 		if err := cur.All(ctx, &results); err != nil {
 			log.Printf("slow-collector: read cursor on %s: %v", dbname, err)
 			continue
 		}
 
 		for _, r := range results {
-			db, coll := splitNamespace(r.NS)
-			if db == "" {
-				db = dbname
-			}
-			e.mongoSlowGauge.WithLabelValues(db, coll).Set(float64(r.Count))
-			if r.Count > 0 {
-				e.mongoSlowTotal.WithLabelValues(db, coll).Add(float64(r.Count))
-			}
+			e.mongoSlowGauge.WithLabelValues(
+				r.ID.DB,
+				r.ID.Collection,
+				r.ID.CommandName,
+				r.ID.AppName,
+				r.ID.PlanSummary,
+				r.ID.Op,
+				r.ID.Command,
+			).Set(float64(r.Count))
+
+			e.mongoSlowTotal.WithLabelValues(
+				r.ID.DB,
+				r.ID.Collection,
+				r.ID.CommandName,
+				r.ID.AppName,
+				r.ID.PlanSummary,
+				r.ID.Op,
+				r.ID.Command,
+			).Add(float64(r.Count))
+
+			e.mongoSlowAvgMillis.WithLabelValues(
+				r.ID.DB,
+				r.ID.Collection,
+				r.ID.CommandName,
+				r.ID.AppName,
+				r.ID.PlanSummary,
+			).Set(r.AvgMillis)
+
+			e.mongoSlowMaxMillis.WithLabelValues(
+				r.ID.DB,
+				r.ID.Collection,
+				r.ID.CommandName,
+				r.ID.AppName,
+				r.ID.PlanSummary,
+			).Set(float64(r.MaxMillis))
+
+			e.mongoSlowExecTimeTotal.WithLabelValues(
+				r.ID.DB,
+				r.ID.Collection,
+				r.ID.CommandName,
+				r.ID.AppName,
+				r.ID.PlanSummary,
+			).Add(r.AvgMillis * float64(r.Count))
+
 		}
 
 		e.lastSeenTs[dbname] = time.Now()
