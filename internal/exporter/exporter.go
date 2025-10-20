@@ -17,9 +17,13 @@ type Exporter struct {
 	cfg      config.Config
 	registry *prometheus.Registry
 
-	mongoUp         prometheus.Gauge
-	mongoSlowGauge  *prometheus.GaugeVec
-	mongoSlowTotal  *prometheus.CounterVec
+	mongoUp                prometheus.Gauge
+	mongoSlowGauge         *prometheus.GaugeVec
+	mongoSlowTotal         *prometheus.CounterVec
+	mongoSlowAvgMillis     *prometheus.GaugeVec
+	mongoSlowMaxMillis     *prometheus.GaugeVec
+	mongoSlowExecTimeTotal *prometheus.CounterVec
+
 	indexAccess     *prometheus.CounterVec
 	indexAccessRate *prometheus.GaugeVec
 	indexSize       *prometheus.GaugeVec
@@ -46,7 +50,7 @@ func New(cfg config.Config) *Exporter {
 				Name:      "slow_queries",
 				Help:      "Number of slow operations (≥ slow_ms) per db/collection/command since last interval.",
 			},
-			[]string{"db", "collection", "command", "app", "plan", "comment"},
+			[]string{"db", "collection", "command", "app", "plan", "op", "query"},
 		),
 		mongoSlowTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -54,7 +58,31 @@ func New(cfg config.Config) *Exporter {
 				Name:      "slow_queries_total",
 				Help:      "Cumulative slow operations (≥ slow_ms) per db/collection/command.",
 			},
-			[]string{"db", "collection", "command", "app", "plan", "comment"},
+			[]string{"db", "collection", "command", "app", "plan", "op", "query"},
+		),
+		mongoSlowAvgMillis: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "mongodb",
+				Name:      "slow_query_avg_ms",
+				Help:      "Average latency (ms) of slow operations per db/collection/command.",
+			},
+			[]string{"db", "collection", "command", "app", "plan"},
+		),
+		mongoSlowMaxMillis: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "mongodb",
+				Name:      "slow_query_max_ms",
+				Help:      "Maximum latency (ms) of slow operations per db/collection/command.",
+			},
+			[]string{"db", "collection", "command", "app", "plan"},
+		),
+		mongoSlowExecTimeTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "mongodb",
+				Name:      "slow_queries_exec_time_total_ms",
+				Help:      "Total execution time (ms) accumulated by slow queries per db/collection/command.",
+			},
+			[]string{"db", "collection", "command", "app", "plan"},
 		),
 		indexAccess: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -97,6 +125,9 @@ func New(cfg config.Config) *Exporter {
 		e.mongoUp,
 		e.mongoSlowGauge,
 		e.mongoSlowTotal,
+		e.mongoSlowAvgMillis,
+		e.mongoSlowMaxMillis,
+		e.mongoSlowExecTimeTotal,
 		e.indexAccess,
 		e.indexAccessRate,
 		e.indexSize,

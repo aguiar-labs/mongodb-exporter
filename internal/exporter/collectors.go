@@ -225,6 +225,8 @@ func (e *Exporter) collectSlowMetrics(client *mongo.Client) {
 				{"client", 1},
 				{"user", 1},
 				{"planSummary", 1},
+				{"docsExamined", 1},
+				{"keysExamined", 1},
 				{"commandName", bson.D{
 					{"$first", bson.D{
 						{"$map", bson.D{
@@ -236,7 +238,7 @@ func (e *Exporter) collectSlowMetrics(client *mongo.Client) {
 				}},
 				{"command", bson.D{
 					{"$function", bson.D{
-						{"body", "function(cmd) { try { return JSON.stringify(cmd).slice(0, 500); } catch (e) { return ''; } }"},
+						{"body", "function(cmd) { try { if (!cmd || typeof cmd !== 'object') return ''; function sanitizeValue(v){ if (v === null || v === undefined) return '?'; var t = typeof v; if (t === 'string' || t === 'number' || t === 'boolean') return '?'; if (Array.isArray(v)) return v.map(sanitizeValue); if (t === 'object') { var ks = Object.keys(v); if (ks.length === 1 && (ks[0] === '$oid' || ks[0] === '$date' || ks[0] === '$numberLong' || ks[0] === '$binary' || ks[0] === '$uuid')) return '?'; var o = {}; for (var k in v) { o[k] = sanitizeValue(v[k]); } return o; } return '?'; } function sanitizeFilter(f){ if (!f || typeof f !== 'object') return {}; var out = {}; for (var k in f) { out[k] = sanitizeValue(f[k]); } return out; } var c = {}; for (var k in cmd) { c[k] = cmd[k]; } delete c.lsid; delete c.$clusterTime; delete c.$db; delete c.$readPreference; delete c.$client; delete c.txnNumber; delete c.comment; delete c.allowDiskUse; var out = c; if (c.find) { out = { find: c.find, filter: sanitizeFilter(c.filter || {}) }; } else if (c.aggregate) { var matches = []; (c.pipeline || []).forEach(function(stage){ if (stage.$match) matches.push(sanitizeFilter(stage.$match)); }); out = { aggregate: c.aggregate, match: matches }; } else if (c.update) { out = { update: c.update, updates: (c.updates || []).map(function(u){ return { q: sanitizeFilter(u.q || {}), u: '?' }; }) }; } else if (c.delete) { out = { delete: c.delete, deletes: (c.deletes || []).map(function(d){ return { q: sanitizeFilter(d.q || {}) }; }) }; } return JSON.stringify(out).slice(0, 500); } catch (e) { return ''; } }"},
 						{"args", bson.A{"$command"}},
 						{"lang", "js"},
 					}},
@@ -250,6 +252,7 @@ func (e *Exporter) collectSlowMetrics(client *mongo.Client) {
 					{"op", "$op"},
 					{"planSummary", "$planSummary"},
 					{"appName", "$appName"},
+					{"command", "$command"},
 				}},
 				{"count", bson.D{{"$sum", 1}}},
 				{"avgMillis", bson.D{{"$avg", "$millis"}}},
@@ -273,6 +276,7 @@ func (e *Exporter) collectSlowMetrics(client *mongo.Client) {
 				Op          string `bson:"op"`
 				PlanSummary string `bson:"planSummary"`
 				AppName     string `bson:"appName"`
+				Command     string `bson:"command"`
 			} `bson:"_id"`
 			Count     int64   `bson:"count"`
 			AvgMillis float64 `bson:"avgMillis"`
@@ -289,19 +293,46 @@ func (e *Exporter) collectSlowMetrics(client *mongo.Client) {
 				r.ID.DB,
 				r.ID.Collection,
 				r.ID.CommandName,
-				r.ID.Op,
-				r.ID.PlanSummary,
 				r.ID.AppName,
+				r.ID.PlanSummary,
+				r.ID.Op,
+				r.ID.Command,
 			).Set(float64(r.Count))
 
 			e.mongoSlowTotal.WithLabelValues(
 				r.ID.DB,
 				r.ID.Collection,
 				r.ID.CommandName,
-				r.ID.Op,
-				r.ID.PlanSummary,
 				r.ID.AppName,
+				r.ID.PlanSummary,
+				r.ID.Op,
+				r.ID.Command,
 			).Add(float64(r.Count))
+
+			e.mongoSlowAvgMillis.WithLabelValues(
+				r.ID.DB,
+				r.ID.Collection,
+				r.ID.CommandName,
+				r.ID.AppName,
+				r.ID.PlanSummary,
+			).Set(r.AvgMillis)
+
+			e.mongoSlowMaxMillis.WithLabelValues(
+				r.ID.DB,
+				r.ID.Collection,
+				r.ID.CommandName,
+				r.ID.AppName,
+				r.ID.PlanSummary,
+			).Set(float64(r.MaxMillis))
+
+			e.mongoSlowExecTimeTotal.WithLabelValues(
+				r.ID.DB,
+				r.ID.Collection,
+				r.ID.CommandName,
+				r.ID.AppName,
+				r.ID.PlanSummary,
+			).Add(r.AvgMillis * float64(r.Count))
+
 		}
 
 		e.lastSeenTs[dbname] = time.Now()
